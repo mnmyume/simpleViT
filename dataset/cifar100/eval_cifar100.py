@@ -1,117 +1,112 @@
 import torch
 import pickle
 import os
-from torch.utils.data import DataLoader
-from transformers import ViTImageProcessor, ViTForImageClassification
 import numpy as np
 from PIL import Image
+from torch.utils.data import DataLoader
+from torchvision import transforms
+from transformers import ViTImageProcessor, ViTForImageClassification
 from tqdm import tqdm
-from torch.optim import AdamW
+
 
 # define CIFAR-100 dataset path
 cifar100_dir = './cifar-100-python/'
 
 
-# load CIFAR-10 dataset
-def load_cifar100_batch(filename):
-    with open(filename, 'rb') as f:
-        batch = pickle.load(f, encoding='latin1')
-    return batch['data'], np.array(batch['fine_labels'])
-
-
+# load CIFAR-100 dataset
 def load_cifar100_test_data(cifar100_dir):
-
-    # load test dataset
-    test_data, test_labels = load_cifar100_batch(os.path.join(cifar100_dir, 'test'))
-
-    return test_data, test_labels
-
-
-# access CIFAR-10 data
-X_test, y_test = load_cifar100_test_data(cifar100_dir)
+    with open(os.path.join(cifar100_dir, 'test'), 'rb') as f:
+        batch = pickle.load(f, encoding='latin1')
+    data = batch['data']
+    labels = batch['fine_labels']
+    return data, np.array(labels)
 
 
 # Preprocess the images: CIFAR-100 images are 32x32, but ViT expects 224x224 images
-def preprocess_image(image):
+def preprocess_image(image, transform=None):
     image = Image.fromarray(image)
-    image = image.resize((224, 224))  # Resize to 224x224 for ViT
+    if transform:
+        image = transform(image)
+    else:
+        image = image.resize((224, 224))
+
     return image
 
 
 # create dataset class
-class CIFAR100Dataset(torch.utils.data.Dataset):
-    def __init__(self, images, labels, processor):
+class CIFAR100TestDataset(torch.utils.data.Dataset):
+    def __init__(self, images, labels, processor, transform=None):
         self.images = images
         self.labels = labels
         self.processor = processor
+        self.transform = transform
 
     def __len__(self):
         return len(self.images)
 
     def __getitem__(self, idx):
-        image = preprocess_image(self.images[idx].reshape(32, 32, 3))  # Ensure image is 32x32x3
+        image = self.images[idx].reshape(32, 32, 3)
+        image = preprocess_image(image, self.transform)
         label = self.labels[idx]
+
         # Use the processor to convert the image to tensor format suitable for ViT
         inputs = self.processor(images=image, return_tensors="pt")
 
-        # Ensure the correct shape for ViT: batch_size x channels x height x width
-        inputs = {key: value.squeeze(0) for key, value in inputs.items()}  # Remove batch dimension
+        inputs = {key: value.squeeze(0) for key, value in inputs.items()}
 
-        inputs['labels'] = torch.tensor(label)
-        return inputs
+        return inputs, torch.tensor(label).long()
 
 
-# Load the processor and model
-processor = ViTImageProcessor.from_pretrained('google/vit-base-patch16-224')
-model = ViTForImageClassification.from_pretrained('google/vit-base-patch16-224')
+# Load model and processor
+model = ViTForImageClassification.from_pretrained('./trained_model', num_labels=100)
+processor = ViTImageProcessor.from_pretrained('./trained_model')
 
-
-# Change the classifier head to match CIFAR-10 classes (10 classes)
-model.classifier = torch.nn.Linear(model.config.hidden_size, 100)
-
-
-# load fine-tuned(trained) model
-model.load_state_dict(torch.load('./trained_model.pth', weights_only=True))
 
 # Move model to GPU if available
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(device)
-
-criterion = torch.nn.CrossEntropyLoss()
-
 model.to(device)
-
-
-# Create DataLoader for CIFAR-10 test data
-test_dataset = CIFAR100Dataset(X_test, y_test, processor)
-test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
-
-# Evaluation mode
 model.eval()
 
-# Calculate accuracy
-total_loss = 0
+
+# Transform
+eval_transform = transforms.Resize((224, 224))
+
+
+# Load test set
+X_test, y_test = load_cifar100_test_data(cifar100_dir)
+test_dataset = CIFAR100TestDataset(X_test, y_test, processor, transform=eval_transform)
+test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+
+
+# Loss function
+criterion = torch.nn.CrossEntropyLoss()
+
+
+# Evaluation
 correct = 0
 total = 0
+total_loss = 0
 
 with torch.no_grad():
-    for batch in tqdm(test_loader, desc="Evaluating", leave=False):
-        batch = {k: v.to(device) for k, v in batch.items()}
-        inputs = {key: value for key, value in batch.items() if key != 'labels'}
-        labels = batch['labels'].to(device)
+    for inputs, labels in tqdm(test_loader, desc="Evaluating"):
+        inputs = {key: value.to(device) for key, value in inputs.items()}
+        labels = labels.to(device)
 
         # Forward pass
         outputs = model(**inputs)
         logits = outputs.logits
+
         loss = criterion(logits, labels)
-
         total_loss += loss.item()
-        predictions = torch.argmax(logits, dim=-1)
 
-        # Calculate the number of correct predictions
+        predictions = torch.argmax(logits, dim=-1)
         correct += (predictions == labels).sum().item()
         total += labels.size(0)
 
+# Results
+avg_loss = total_loss / len(test_loader)
 accuracy = correct / total
-print(f"Loss on CIFAR-100 test set: {total_loss:.4f}")
-print(f"Accuracy on CIFAR-100 test set: {accuracy * 100:.2f}%")
+
+print(f"Test Accuracy: {accuracy * 100:.2f}%")
+print(f"Average Loss: {avg_loss:.4f}")

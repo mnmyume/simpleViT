@@ -10,3 +10,9 @@ dataset/cifar100/cifar-100-python/meta
 dataset/cifar100/cifar-100-python/test
 dataset/cifar100/cifar-100-python/train
 dataset/cifar/cifar-10-batches-py/test_batch
+dataset/cifar/trained_model/config.json
+dataset/cifar/trained_model/model.safetensors
+dataset/cifar/trained_model/preprocessor_config.json
+dataset/cifar100/trained_model/config.json
+dataset/cifar100/trained_model/model.safetensors
+dataset/cifar100/trained_model/preprocessor_config.json
